@@ -19,6 +19,8 @@ struct ValueData {
     prev: Vec<Value>,
     /// 運算標籤（debug 用）
     op: String,
+    /// 節點標籤（給人看的）
+    label: String,
 }
 
 /// 反向傳播閉包
@@ -41,8 +43,67 @@ impl Value {
                 backward_fn: None,
                 prev: vec![],
                 op: String::new(),
+                label: String::new(),
             })),
         }
+    }
+
+    /// 設定節點標籤（方便看圖）
+    pub fn label(self, name: &str) -> Self {
+        self.inner.borrow_mut().label = name.to_string();
+        self
+    }
+
+    /// 產生 DOT 格式的計算圖（Graphviz）
+    pub fn to_dot(&self) -> String {
+        let mut dot = String::from("digraph {\n  rankdir=LR;\n  node [shape=record];\n\n");
+        let mut visited: Vec<*const RefCell<ValueData>> = vec![];
+
+        fn trace(
+            v: &Value,
+            visited: &mut Vec<*const RefCell<ValueData>>,
+            dot: &mut String,
+        ) {
+            let ptr = Rc::as_ptr(&v.inner);
+            if visited.contains(&ptr) {
+                return;
+            }
+            visited.push(ptr);
+
+            let uid = format!("{:p}", ptr);
+            let inner = v.inner.borrow();
+
+            // 資料節點
+            let label_part = if inner.label.is_empty() {
+                String::new()
+            } else {
+                format!("{} | ", inner.label)
+            };
+            dot.push_str(&format!(
+                "  \"{}\" [label=\"{{{}data {:.4} | grad {:.4}}}\"];\n",
+                uid, label_part, inner.data, inner.grad
+            ));
+
+            // op 節點
+            if !inner.op.is_empty() {
+                let op_uid = format!("{}_op", uid);
+                dot.push_str(&format!(
+                    "  \"{}\" [label=\"{}\", shape=circle];\n",
+                    op_uid, inner.op
+                ));
+                dot.push_str(&format!("  \"{}\" -> \"{}\";\n", op_uid, uid));
+
+                for child in &inner.prev {
+                    let child_uid = format!("{:p}", Rc::as_ptr(&child.inner));
+                    dot.push_str(&format!("  \"{}\" -> \"{}\";\n", child_uid, op_uid));
+                    trace(child, visited, dot);
+                }
+            }
+        }
+
+        trace(self, &mut visited, &mut dot);
+        dot.push_str("}\n");
+        dot
     }
 
     /// 讀取前向值
@@ -560,6 +621,20 @@ mod tests {
         b.backward();
         let s = 1.0 / (1.0 + (-1.0_f64).exp());
         assert!((a.grad() - s * (1.0 - s)).abs() < 1e-6);
+    }
+
+    // T19: Graphviz
+    #[test]
+    fn test_to_dot() {
+        let a = Value::new(2.0).label("a");
+        let b = Value::new(3.0).label("b");
+        let c = (&a * &b).label("c");
+        c.backward();
+        let dot = c.to_dot();
+        assert!(dot.contains("digraph"));
+        assert!(dot.contains("*"));
+        assert!(dot.contains("a"));
+        assert!(dot.contains("b"));
     }
 
     // T16: micrograd 官方範例 — 完整版（含 div）
